@@ -3,40 +3,51 @@ from __future__ import print_function
 import pytest
 import os
 import numpy as np
-np.random.seed(1337)
+from numpy.testing import assert_allclose
 
 from keras import backend as K
-from keras.models import Graph, Sequential
-from keras.layers.core import Dense, Activation, Merge, Lambda
+import keras
+from keras.models import Sequential
+from keras.layers import Dense, Activation
 from keras.utils import np_utils
-from keras.utils.test_utils import get_test_data, keras_test
+from keras.utils.test_utils import get_test_data
 from keras.models import model_from_json, model_from_yaml
-from keras import objectives
-from keras.engine.training import make_batches
+from keras import losses
+from keras.engine.training_utils import make_batches
 
 
 input_dim = 16
-nb_hidden = 8
-nb_class = 4
+num_hidden = 8
+num_classes = 4
 batch_size = 32
-nb_epoch = 1
+epochs = 1
 
 
-@keras_test
+@pytest.fixture
+def in_tmpdir(tmpdir):
+    """Runs a function in a temporary directory.
+
+    Checks that the directory is empty afterwards.
+    """
+    with tmpdir.as_cwd():
+        yield None
+    assert not tmpdir.listdir()
+
+
 def test_sequential_pop():
     model = Sequential()
-    model.add(Dense(nb_hidden, input_dim=input_dim))
-    model.add(Dense(nb_class))
+    model.add(Dense(num_hidden, input_dim=input_dim))
+    model.add(Dense(num_classes))
     model.compile(loss='mse', optimizer='sgd')
     x = np.random.random((batch_size, input_dim))
-    y = np.random.random((batch_size, nb_class))
-    model.fit(x, y, nb_epoch=1)
+    y = np.random.random((batch_size, num_classes))
+    model.fit(x, y, epochs=1)
     model.pop()
     assert len(model.layers) == 1
-    assert model.output_shape == (None, nb_hidden)
+    assert model.output_shape == (None, num_hidden)
     model.compile(loss='mse', optimizer='sgd')
-    y = np.random.random((batch_size, nb_hidden))
-    model.fit(x, y, nb_epoch=1)
+    y = np.random.random((batch_size, num_hidden))
+    model.fit(x, y, epochs=1)
 
 
 def _get_test_data():
@@ -45,60 +56,62 @@ def _get_test_data():
     train_samples = 100
     test_samples = 50
 
-    (X_train, y_train), (X_test, y_test) = get_test_data(nb_train=train_samples,
-                                                         nb_test=test_samples,
+    (x_train, y_train), (x_test, y_test) = get_test_data(num_train=train_samples,
+                                                         num_test=test_samples,
                                                          input_shape=(input_dim,),
                                                          classification=True,
-                                                         nb_class=4)
+                                                         num_classes=num_classes)
     y_test = np_utils.to_categorical(y_test)
     y_train = np_utils.to_categorical(y_train)
-    return (X_train, y_train), (X_test, y_test)
+    return (x_train, y_train), (x_test, y_test)
 
 
-@keras_test
 def test_sequential_fit_generator():
-    (X_train, y_train), (X_test, y_test) = _get_test_data()
+    (x_train, y_train), (x_test, y_test) = _get_test_data()
 
     def data_generator(train):
         if train:
-            max_batch_index = len(X_train) // batch_size
+            max_batch_index = len(x_train) // batch_size
         else:
-            max_batch_index = len(X_test) // batch_size
+            max_batch_index = len(x_test) // batch_size
         i = 0
         while 1:
             if train:
-                yield (X_train[i * batch_size: (i + 1) * batch_size], y_train[i * batch_size: (i + 1) * batch_size])
+                yield (x_train[i * batch_size: (i + 1) * batch_size],
+                       y_train[i * batch_size: (i + 1) * batch_size])
             else:
-                yield (X_test[i * batch_size: (i + 1) * batch_size], y_test[i * batch_size: (i + 1) * batch_size])
+                yield (x_test[i * batch_size: (i + 1) * batch_size],
+                       y_test[i * batch_size: (i + 1) * batch_size])
             i += 1
             i = i % max_batch_index
 
     model = Sequential()
-    model.add(Dense(nb_hidden, input_shape=(input_dim,)))
+    model.add(Dense(num_hidden, input_shape=(input_dim,)))
     model.add(Activation('relu'))
-    model.add(Dense(nb_class))
+    model.add(Dense(num_classes))
     model.pop()
-    model.add(Dense(nb_class))
+    model.add(Dense(num_classes))
     model.add(Activation('softmax'))
     model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
 
-    model.fit_generator(data_generator(True), len(X_train), nb_epoch)
-    model.fit_generator(data_generator(True), len(X_train), nb_epoch, validation_data=(X_test, y_test))
-    model.fit_generator(data_generator(True), len(X_train), nb_epoch,
-                        validation_data=data_generator(False), nb_val_samples=batch_size * 3)
-    model.fit_generator(data_generator(True), len(X_train), nb_epoch, max_q_size=2)
-    model.evaluate(X_train, y_train)
+    model.fit_generator(data_generator(True), 5, epochs)
+    model.fit_generator(data_generator(True), 5, epochs,
+                        validation_data=(x_test, y_test))
+    model.fit_generator(data_generator(True), 5, epochs,
+                        validation_data=data_generator(False),
+                        validation_steps=3)
+    model.fit_generator(data_generator(True), 5, epochs, max_queue_size=2)
+    model.evaluate(x_train, y_train)
 
 
-@keras_test
-def test_sequential():
-    (X_train, y_train), (X_test, y_test) = _get_test_data()
+def test_sequential(in_tmpdir):
+    (x_train, y_train), (x_test, y_test) = _get_test_data()
 
     # TODO: factor out
     def data_generator(x, y, batch_size=50):
         index_array = np.arange(len(x))
         while 1:
-            batches = make_batches(len(X_test), batch_size)
+            batches = make_batches(len(x_test), batch_size)
             for batch_index, (batch_start, batch_end) in enumerate(batches):
                 batch_ids = index_array[batch_start:batch_end]
                 x_batch = x[batch_ids]
@@ -106,49 +119,57 @@ def test_sequential():
                 yield (x_batch, y_batch)
 
     model = Sequential()
-    model.add(Dense(nb_hidden, input_shape=(input_dim,)))
+    model.add(Dense(num_hidden, input_shape=(input_dim,)))
     model.add(Activation('relu'))
-    model.add(Dense(nb_class))
+    model.add(Dense(num_classes))
     model.add(Activation('softmax'))
     model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
 
-    model.fit(X_train, y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=1, validation_data=(X_test, y_test))
-    model.fit(X_train, y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=2, validation_split=0.1)
-    model.fit(X_train, y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0)
-    model.fit(X_train, y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=1, shuffle=False)
+    model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, verbose=1,
+              validation_data=(x_test, y_test))
+    model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, verbose=2,
+              validation_split=0.1)
+    model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, verbose=0)
+    model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, verbose=1,
+              shuffle=False)
 
-    model.train_on_batch(X_train[:32], y_train[:32])
+    model.train_on_batch(x_train[:32], y_train[:32])
 
-    loss = model.evaluate(X_test, y_test)
+    loss = model.evaluate(x_test, y_test)
 
-    prediction = model.predict_generator(data_generator(X_test, y_test), X_test.shape[0], max_q_size=2)
-    gen_loss = model.evaluate_generator(data_generator(X_test, y_test, 50), X_test.shape[0], max_q_size=2)
-    pred_loss = K.eval(K.mean(objectives.get(model.loss)(K.variable(y_test), K.variable(prediction))))
+    prediction = model.predict_generator(data_generator(x_test, y_test), 1,
+                                         max_queue_size=2, verbose=1)
+    gen_loss = model.evaluate_generator(data_generator(x_test, y_test, 50), 1,
+                                        max_queue_size=2)
+    pred_loss = K.eval(K.mean(losses.get(model.loss)(K.variable(y_test),
+                                                     K.variable(prediction))))
 
     assert(np.isclose(pred_loss, loss))
     assert(np.isclose(gen_loss, loss))
 
-    model.predict(X_test, verbose=0)
-    model.predict_classes(X_test, verbose=0)
-    model.predict_proba(X_test, verbose=0)
+    model.predict(x_test, verbose=0)
+    model.predict_classes(x_test, verbose=0)
+    model.predict_proba(x_test, verbose=0)
 
     fname = 'test_sequential_temp.h5'
     model.save_weights(fname, overwrite=True)
     model = Sequential()
-    model.add(Dense(nb_hidden, input_shape=(input_dim,)))
+    model.add(Dense(num_hidden, input_shape=(input_dim,)))
     model.add(Activation('relu'))
-    model.add(Dense(nb_class))
+    model.add(Dense(num_classes))
     model.add(Activation('softmax'))
     model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
     model.load_weights(fname)
     os.remove(fname)
 
-    nloss = model.evaluate(X_test, y_test, verbose=0)
+    nloss = model.evaluate(x_test, y_test, verbose=0)
     assert(loss == nloss)
 
-    # test serialization
+    # Test serialization
     config = model.get_config()
-    Sequential.from_config(config)
+    assert 'name' in config
+    new_model = Sequential.from_config(config)
+    assert new_model.weights  # Model should be built.
 
     model.summary()
     json_str = model.to_json()
@@ -158,14 +179,13 @@ def test_sequential():
     model_from_yaml(yaml_str)
 
 
-@keras_test
-def test_nested_sequential():
-    (X_train, y_train), (X_test, y_test) = _get_test_data()
+def test_nested_sequential(in_tmpdir):
+    (x_train, y_train), (x_test, y_test) = _get_test_data()
 
     inner = Sequential()
-    inner.add(Dense(nb_hidden, input_shape=(input_dim,)))
+    inner.add(Dense(num_hidden, input_shape=(input_dim,)))
     inner.add(Activation('relu'))
-    inner.add(Dense(nb_class))
+    inner.add(Dense(num_classes))
 
     middle = Sequential()
     middle.add(inner)
@@ -175,26 +195,29 @@ def test_nested_sequential():
     model.add(Activation('softmax'))
     model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
 
-    model.fit(X_train, y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=1, validation_data=(X_test, y_test))
-    model.fit(X_train, y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=2, validation_split=0.1)
-    model.fit(X_train, y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0)
-    model.fit(X_train, y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=1, shuffle=False)
+    model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, verbose=1,
+              validation_data=(x_test, y_test))
+    model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, verbose=2,
+              validation_split=0.1)
+    model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, verbose=0)
+    model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, verbose=1,
+              shuffle=False)
 
-    model.train_on_batch(X_train[:32], y_train[:32])
+    model.train_on_batch(x_train[:32], y_train[:32])
 
-    loss = model.evaluate(X_test, y_test, verbose=0)
+    loss = model.evaluate(x_test, y_test, verbose=0)
 
-    model.predict(X_test, verbose=0)
-    model.predict_classes(X_test, verbose=0)
-    model.predict_proba(X_test, verbose=0)
+    model.predict(x_test, verbose=0)
+    model.predict_classes(x_test, verbose=0)
+    model.predict_proba(x_test, verbose=0)
 
     fname = 'test_nested_sequential_temp.h5'
     model.save_weights(fname, overwrite=True)
 
     inner = Sequential()
-    inner.add(Dense(nb_hidden, input_shape=(input_dim,)))
+    inner.add(Dense(num_hidden, input_shape=(input_dim,)))
     inner.add(Activation('relu'))
-    inner.add(Dense(nb_class))
+    inner.add(Dense(num_classes))
 
     middle = Sequential()
     middle.add(inner)
@@ -206,10 +229,10 @@ def test_nested_sequential():
     model.load_weights(fname)
     os.remove(fname)
 
-    nloss = model.evaluate(X_test, y_test, verbose=0)
+    nloss = model.evaluate(x_test, y_test, verbose=0)
     assert(loss == nloss)
 
-    # test serialization
+    # Test serialization
     config = model.get_config()
     Sequential.from_config(config)
 
@@ -221,260 +244,19 @@ def test_nested_sequential():
     model_from_yaml(yaml_str)
 
 
-@keras_test
-def test_merge_sum():
-    (X_train, y_train), (X_test, y_test) = _get_test_data()
-    left = Sequential()
-    left.add(Dense(nb_hidden, input_shape=(input_dim,)))
-    left.add(Activation('relu'))
-
-    right = Sequential()
-    right.add(Dense(nb_hidden, input_shape=(input_dim,)))
-    right.add(Activation('relu'))
-
-    model = Sequential()
-    model.add(Merge([left, right], mode='sum'))
-    model.add(Dense(nb_class))
-    model.add(Activation('softmax'))
-    model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
-
-    model.fit([X_train, X_train], y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0, validation_data=([X_test, X_test], y_test))
-    model.fit([X_train, X_train], y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0, validation_split=0.1)
-    model.fit([X_train, X_train], y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0)
-    model.fit([X_train, X_train], y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0, shuffle=False)
-
-    loss = model.evaluate([X_test, X_test], y_test, verbose=0)
-
-    model.predict([X_test, X_test], verbose=0)
-    model.predict_classes([X_test, X_test], verbose=0)
-    model.predict_proba([X_test, X_test], verbose=0)
-
-    # test weight saving
-    fname = 'test_merge_sum_temp.h5'
-    model.save_weights(fname, overwrite=True)
-    left = Sequential()
-    left.add(Dense(nb_hidden, input_shape=(input_dim,)))
-    left.add(Activation('relu'))
-    right = Sequential()
-    right.add(Dense(nb_hidden, input_shape=(input_dim,)))
-    right.add(Activation('relu'))
-    model = Sequential()
-    model.add(Merge([left, right], mode='sum'))
-    model.add(Dense(nb_class))
-    model.add(Activation('softmax'))
-    model.load_weights(fname)
-    os.remove(fname)
-    model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
-
-    nloss = model.evaluate([X_test, X_test], y_test, verbose=0)
-    assert(loss == nloss)
-
-    # test serialization
-    config = model.get_config()
-    Sequential.from_config(config)
-
-    model.summary()
-    json_str = model.to_json()
-    model_from_json(json_str)
-
-    yaml_str = model.to_yaml()
-    model_from_yaml(yaml_str)
-
-
-@keras_test
-def test_merge_dot():
-    (X_train, y_train), (X_test, y_test) = _get_test_data()
-
-    left = Sequential()
-    left.add(Dense(input_dim=input_dim, output_dim=nb_hidden))
-    left.add(Activation('relu'))
-
-    right = Sequential()
-    right.add(Dense(input_dim=input_dim, output_dim=nb_hidden))
-    right.add(Activation('relu'))
-
-    model = Sequential()
-    model.add(Merge([left, right], mode='dot', dot_axes=1))
-    model.add(Dense(nb_class))
-    model.add(Activation('softmax'))
-
-    model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
-
-    left = Sequential()
-    left.add(Dense(input_dim=input_dim, output_dim=nb_hidden))
-    left.add(Activation('relu'))
-
-    right = Sequential()
-    right.add(Dense(input_dim=input_dim, output_dim=nb_hidden))
-    right.add(Activation('relu'))
-
-    model = Sequential()
-    model.add(Merge([left, right], mode='dot', dot_axes=[1, 1]))
-    model.add(Dense(nb_class))
-    model.add(Activation('softmax'))
-
-    model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
-
-
-@keras_test
-def test_merge_concat():
-    (X_train, y_train), (X_test, y_test) = _get_test_data()
-
-    left = Sequential(name='branch_1')
-    left.add(Dense(nb_hidden, input_shape=(input_dim,), name='dense_1'))
-    left.add(Activation('relu', name='relu_1'))
-
-    right = Sequential(name='branch_2')
-    right.add(Dense(nb_hidden, input_shape=(input_dim,), name='dense_2'))
-    right.add(Activation('relu', name='relu_2'))
-
-    model = Sequential(name='merged_branches')
-    model.add(Merge([left, right], mode='concat', name='merge'))
-    model.add(Dense(nb_class, name='final_dense'))
-    model.add(Activation('softmax', name='softmax'))
-    model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
-
-    model.fit([X_train, X_train], y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0, validation_data=([X_test, X_test], y_test))
-    model.fit([X_train, X_train], y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0, validation_split=0.1)
-    model.fit([X_train, X_train], y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0)
-    model.fit([X_train, X_train], y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0, shuffle=False)
-
-    loss = model.evaluate([X_test, X_test], y_test, verbose=0)
-
-    model.predict([X_test, X_test], verbose=0)
-    model.predict_classes([X_test, X_test], verbose=0)
-    model.predict_proba([X_test, X_test], verbose=0)
-    model.get_config()
-
-    fname = 'test_merge_concat_temp.h5'
-    model.save_weights(fname, overwrite=True)
-    model.fit([X_train, X_train], y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0)
-    model.load_weights(fname)
-    os.remove(fname)
-
-    nloss = model.evaluate([X_test, X_test], y_test, verbose=0)
-    assert(loss == nloss)
-
-
-@keras_test
-def test_merge_recursivity():
-    (X_train, y_train), (X_test, y_test) = _get_test_data()
-    left = Sequential()
-    left.add(Dense(nb_hidden, input_shape=(input_dim,)))
-    left.add(Activation('relu'))
-
-    right = Sequential()
-    right.add(Dense(nb_hidden, input_shape=(input_dim,)))
-    right.add(Activation('relu'))
-
-    righter = Sequential()
-    righter.add(Dense(nb_hidden, input_shape=(input_dim,)))
-    righter.add(Activation('relu'))
-
-    intermediate = Sequential()
-    intermediate.add(Merge([left, right], mode='sum'))
-    intermediate.add(Dense(nb_hidden))
-    intermediate.add(Activation('relu'))
-
-    model = Sequential()
-    model.add(Merge([intermediate, righter], mode='sum'))
-    model.add(Dense(nb_class))
-    model.add(Activation('softmax'))
-    model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
-
-    model.fit([X_train, X_train, X_train], y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0, validation_data=([X_test, X_test, X_test], y_test))
-    model.fit([X_train, X_train, X_train], y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0, validation_split=0.1)
-    model.fit([X_train, X_train, X_train], y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0)
-    model.fit([X_train, X_train, X_train], y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0, shuffle=False)
-
-    loss = model.evaluate([X_test, X_test, X_test], y_test, verbose=0)
-
-    model.predict([X_test, X_test, X_test], verbose=0)
-    model.predict_classes([X_test, X_test, X_test], verbose=0)
-    model.predict_proba([X_test, X_test, X_test], verbose=0)
-
-    fname = 'test_merge_recursivity_temp.h5'
-    model.save_weights(fname, overwrite=True)
-    model.load_weights(fname)
-    os.remove(fname)
-
-    nloss = model.evaluate([X_test, X_test, X_test], y_test, verbose=0)
-    assert(loss == nloss)
-
-    # test serialization
-    config = model.get_config()
-    Sequential.from_config(config)
-
-    model.summary()
-    json_str = model.to_json()
-    model_from_json(json_str)
-
-    yaml_str = model.to_yaml()
-    model_from_yaml(yaml_str)
-
-
-@keras_test
-def test_merge_overlap():
-    (X_train, y_train), (X_test, y_test) = _get_test_data()
-    left = Sequential()
-    left.add(Dense(nb_hidden, input_shape=(input_dim,)))
-    left.add(Activation('relu'))
-
-    model = Sequential()
-    model.add(Merge([left, left], mode='sum'))
-    model.add(Dense(nb_class))
-    model.add(Activation('softmax'))
-    model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
-
-    model.fit(X_train, y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=1, validation_data=(X_test, y_test))
-    model.fit(X_train, y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=2, validation_split=0.1)
-    model.fit(X_train, y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=0)
-    model.fit(X_train, y_train, batch_size=batch_size, nb_epoch=nb_epoch, verbose=1, shuffle=False)
-
-    model.train_on_batch(X_train[:32], y_train[:32])
-
-    loss = model.evaluate(X_test, y_test, verbose=0)
-    model.predict(X_test, verbose=0)
-    model.predict_classes(X_test, verbose=0)
-    model.predict_proba(X_test, verbose=0)
-
-    fname = 'test_merge_overlap_temp.h5'
-    print(model.layers)
-    model.save_weights(fname, overwrite=True)
-    print(model.trainable_weights)
-
-    model.load_weights(fname)
-    os.remove(fname)
-
-    nloss = model.evaluate(X_test, y_test, verbose=0)
-    assert(loss == nloss)
-
-    # test serialization
-    config = model.get_config()
-    Sequential.from_config(config)
-
-    model.summary()
-    json_str = model.to_json()
-    model_from_json(json_str)
-
-    yaml_str = model.to_yaml()
-    model_from_yaml(yaml_str)
-
-
-@keras_test
 def test_sequential_count_params():
     input_dim = 20
-    nb_units = 10
-    nb_classes = 2
+    num_units = 10
+    num_classes = 2
 
-    n = input_dim * nb_units + nb_units
-    n += nb_units * nb_units + nb_units
-    n += nb_units * nb_classes + nb_classes
+    n = input_dim * num_units + num_units
+    n += num_units * num_units + num_units
+    n += num_units * num_classes + num_classes
 
     model = Sequential()
-    model.add(Dense(nb_units, input_shape=(input_dim,)))
-    model.add(Dense(nb_units))
-    model.add(Dense(nb_classes))
+    model.add(Dense(num_units, input_shape=(input_dim,)))
+    model.add(Dense(num_units))
+    model.add(Dense(num_classes))
     model.add(Activation('softmax'))
     model.build()
 
@@ -482,6 +264,205 @@ def test_sequential_count_params():
 
     model.compile('sgd', 'binary_crossentropy')
     assert(n == model.count_params())
+
+
+def test_nested_sequential_trainability():
+    input_dim = 20
+    num_units = 10
+    num_classes = 2
+
+    inner_model = Sequential()
+    inner_model.add(Dense(num_units, input_shape=(input_dim,)))
+
+    model = Sequential()
+    model.add(inner_model)
+    model.add(Dense(num_classes))
+
+    assert len(model.trainable_weights) == 4
+    inner_model.trainable = False
+    assert len(model.trainable_weights) == 2
+    inner_model.trainable = True
+    assert len(model.trainable_weights) == 4
+
+
+def test_rebuild_model():
+    model = Sequential()
+    model.add(Dense(128, input_shape=(784,)))
+    model.add(Dense(64))
+    assert(model.get_layer(index=-1).output_shape == (None, 64))
+
+    model.add(Dense(32))
+    assert(model.get_layer(index=-1).output_shape == (None, 32))
+
+
+def test_clone_functional_model():
+    val_a = np.random.random((10, 4))
+    val_b = np.random.random((10, 4))
+    val_out = np.random.random((10, 4))
+
+    input_a = keras.Input(shape=(4,))
+    input_b = keras.Input(shape=(4,))
+    dense_1 = keras.layers.Dense(4)
+    dense_2 = keras.layers.Dense(4)
+
+    x_a = dense_1(input_a)
+    x_a = keras.layers.Dropout(0.5)(x_a)
+    x_a = keras.layers.BatchNormalization()(x_a)
+    x_b = dense_1(input_b)
+    x_a = dense_2(x_a)
+    outputs = keras.layers.add([x_a, x_b])
+    model = keras.models.Model([input_a, input_b], outputs)
+
+    if K.backend() == 'tensorflow':
+        # Everything should work in a new session.
+        K.clear_session()
+
+    # With placeholder creation
+    new_model = keras.models.clone_model(model)
+    new_model.compile('rmsprop', 'mse')
+    new_model.train_on_batch([val_a, val_b], val_out)
+
+    # On top of new tensors
+    input_a = keras.Input(shape=(4,), name='a')
+    input_b = keras.Input(shape=(4,), name='b')
+    new_model = keras.models.clone_model(
+        model, input_tensors=[input_a, input_b])
+    new_model.compile('rmsprop', 'mse')
+    new_model.train_on_batch([val_a, val_b], val_out)
+
+    # On top of new, non-Keras tensors
+    input_a = keras.backend.variable(val_a)
+    input_b = keras.backend.variable(val_b)
+    new_model = keras.models.clone_model(
+        model, input_tensors=[input_a, input_b])
+    new_model.compile('rmsprop', 'mse')
+    new_model.train_on_batch(None, val_out)
+
+
+def test_clone_sequential_model():
+    val_a = np.random.random((10, 4))
+    val_out = np.random.random((10, 4))
+
+    model = keras.models.Sequential()
+    model.add(keras.layers.Dense(4, input_shape=(4,)))
+    model.add(keras.layers.BatchNormalization())
+    model.add(keras.layers.Dropout(0.5))
+    model.add(keras.layers.Dense(4))
+
+    if K.backend() == 'tensorflow':
+        # Everything should work in a new session.
+        K.clear_session()
+
+    # With placeholder creation
+    new_model = keras.models.clone_model(model)
+    new_model.compile('rmsprop', 'mse')
+    new_model.train_on_batch(val_a, val_out)
+
+    # On top of new tensor
+    input_a = keras.Input(shape=(4,))
+    new_model = keras.models.clone_model(
+        model, input_tensors=input_a)
+    new_model.compile('rmsprop', 'mse')
+    new_model.train_on_batch(val_a, val_out)
+
+    # On top of new, non-Keras tensor
+    input_a = keras.backend.variable(val_a)
+    new_model = keras.models.clone_model(
+        model, input_tensors=input_a)
+    new_model.compile('rmsprop', 'mse')
+    new_model.train_on_batch(None, val_out)
+
+
+def test_sequential_update_disabling():
+    val_a = np.random.random((10, 4))
+    val_out = np.random.random((10, 4))
+
+    model = keras.models.Sequential()
+    model.add(keras.layers.BatchNormalization(input_shape=(4,)))
+
+    model.trainable = False
+    assert not model.updates
+
+    model.compile('sgd', 'mse')
+    assert not model.updates
+
+    x1 = model.predict(val_a)
+    model.train_on_batch(val_a, val_out)
+    x2 = model.predict(val_a)
+    assert_allclose(x1, x2, atol=1e-7)
+
+    model.trainable = True
+    model.compile('sgd', 'mse')
+    assert model.updates
+
+    model.train_on_batch(val_a, val_out)
+    x2 = model.predict(val_a)
+    assert np.abs(np.sum(x1 - x2)) > 1e-5
+
+
+def test_sequential_deferred_build():
+    model = keras.models.Sequential()
+    model.add(keras.layers.Dense(3))
+    model.add(keras.layers.Dense(3))
+    model.compile('sgd', 'mse')
+
+    assert model.built is False
+    assert len(model.layers) == 2
+    assert len(model.weights) == 0
+
+    model.train_on_batch(
+        np.random.random((2, 4)), np.random.random((2, 3)))
+
+    assert model.built is True
+    assert len(model.layers) == 2
+    assert len(model.weights) == 4
+
+    # Test serialization
+    config = model.get_config()
+    assert 'name' in config
+    new_model = Sequential.from_config(config)
+    assert new_model.built is True
+    assert len(new_model.layers) == 2
+    assert len(new_model.weights) == 4
+
+
+def test_nested_sequential_deferred_build():
+    inner_model = keras.models.Sequential()
+    inner_model.add(keras.layers.Dense(3))
+    inner_model.add(keras.layers.Dense(3))
+
+    model = keras.models.Sequential()
+    model.add(inner_model)
+    model.add(keras.layers.Dense(5))
+    model.compile('sgd', 'mse')
+
+    assert inner_model.built is False
+    assert len(inner_model.layers) == 2
+    assert len(inner_model.weights) == 0
+    assert model.built is False
+    assert len(model.layers) == 2
+    assert len(model.weights) == 0
+
+    model.train_on_batch(
+        np.random.random((2, 4)), np.random.random((2, 5)))
+
+    assert inner_model.built is True
+    assert len(inner_model.layers) == 2
+    assert len(inner_model.weights) == 4
+    assert model.built is True
+    assert len(model.layers) == 2
+    assert len(model.weights) == 6
+
+    config = model.get_config()
+    new_model = keras.models.Sequential.from_config(config)
+    assert new_model.built is True
+    assert len(new_model.layers) == 2
+    assert len(new_model.weights) == 6
+
+    new_inner_model = new_model.layers[0]
+    assert new_inner_model.built is True
+    assert len(new_inner_model.layers) == 2
+    assert len(new_inner_model.weights) == 4
 
 
 if __name__ == '__main__':
